@@ -4,17 +4,18 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.clock import Clock
 from pywifi import const
+from pythonping import ping
 import re
 import socket
 import http.client
 import requests
 import json
 import time
-import os
 import netifaces
 import base64
 import subprocess
 import pywifi
+import concurrent.futures
 
 def disconnect_from_network(iface):
     iface.disconnect()
@@ -147,6 +148,13 @@ senhas_dict = {
     }
 }
 
+def ping_ip(ip):
+    try:
+        result = ping(ip, verbose=False, timeout=1, count=1, size=1)
+        return result
+    except Exception as e:
+        return None
+
 class SimpleApp(App):
     def build(self):
         self.layout = BoxLayout(orientation='vertical', spacing=10)
@@ -180,7 +188,7 @@ class SimpleApp(App):
         return self.layout
 
     def on_scan_button_click(self, instance):
-        self.story_label.text = "Aguarde..."
+        self.story_label.text = "Aguarde, esse processo irá demorar um tempo..."
         self.scan_button.disabled = True
         self.connect_button.disabled = False
         Clock.schedule_once(self.update_ip, 0.1)
@@ -215,145 +223,141 @@ class SimpleApp(App):
                         break
                 
                 if indice == False:
-                    self.story_label.text = "Wifi ok"
+                    self.story_label.text = "Aparentemente sua senha do Wifi está segura."
                     self.connect_button.disabled = False
             else:
-                self.story_label.text = "Sem conexão à internet."
+                self.story_label.text = "Falha na verificação. Verifique se você está conectado à uma rede wifi."
                 self.connect_button.disabled = False
         except:
             self.story_label.text = "Ocorreu um erro, verifique se você possui uma interface de rede."
             self.connect_button.disabled = False
 
-    def update_ip(self, dt):
-        try:         
-            openPortsPUB = []
-            openPortsPRIV = []
-            ip = get_public_ip()
-            gw = netifaces.gateways()
-            ip_router = gw['default'][netifaces.AF_INET][0]
+    def update_ip(self, dt):       
+        openPortsPUB = []
+        openPortsPRIV = []
+        ip = get_public_ip()
+        gw = netifaces.gateways()
+        ip_router = gw['default'][netifaces.AF_INET][0]
 
-            ports = [21, 22, 23, 80, 443]
+        ports = [21, 22, 23, 80, 443]
 
-            def check_open_ports(ip_address, port_list):
-                open_ports = []
-                for port in port_list:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(1)
-                    return_code = sock.connect_ex((ip_address, port))
-                    sock.close()
-                    if return_code == 0:
-                        open_ports.append(port)
-                return open_ports
+        def check_open_ports(ip_address, port_list):
+            open_ports = []
+            for port in port_list:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                return_code = sock.connect_ex((ip_address, port))
+                sock.close()
+                if return_code == 0:
+                    open_ports.append(port)
+            return open_ports
 
-            openPortsPUB = check_open_ports(ip, ports)
-            openPortsPRIV = check_open_ports(ip_router, ports)
-                        
-            port_descriptions = {
-                21: "A porta 21 é usada para comunicações de transferência de arquivos através do protocolo FTP\n" 
-                    "(File Transfer Protocol). Deixá-la aberta no IP público pode expor seus arquivos a riscos\n"
-                    "de segurança.",
-                22: "A porta 22 é usada para acesso seguro via SSH (Secure Shell). Deixá-la aberta no IP público\n"
-                    "pode permitir acesso não autorizado ao seu sistema.",
-                23: "A porta 23 é usada para conexões de terminal remoto com o protocolo Telnet, que é inseguro, \n"
-                    "pois as informações são transmitidas em texto simples. Deixar esta porta aberta pode expor \n"
-                    "informações confidenciais.",
-                80: "A porta 80 é a porta padrão para tráfego HTTP, usado para acessar sites da web. Deixar essa \n"
-                    "porta aberta no IP público pode expor seu servidor web a ataques.",
-                443: "A porta 443 é usada para tráfego HTTPS, que é uma versão segura do HTTP. É usada para transações \n"
-                     "seguras na web, como login e pagamento. Deixar essa porta aberta é geralmente seguro, desde que \n"
-                     "configurada corretamente com certificados SSL/TLS."
-            }
-            
-            camera = ""
-            iscamera = False
-        
-        except:
-            self.story_label.text = "Não foi possível estabelecer conexão."
-            self.scan_button.disabled = False
-            return
-        
-        try:
-            arp_command = ['arp', '-a']
-            output = subprocess.check_output(arp_command).decode()
-            
-            if("00-40-8c" in output):
-                axis = True
-                iscamera = True
-                mac_address_to_find = "00-40-8c"
-                ip_pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+' + re.escape(mac_address_to_find)
-                ip_match = re.search(ip_pattern, output)
-                
-                if ip_match:
-                    ip_address = ip_match.group(1)
-                
-                LOGINURL = f"http://{ip_address}/view/viewer_index.shtml"
-                USERNAME = "root"
-
-                passwords = senhas_dict['camera']['password']
-                
-                for PASSWORD in passwords:
-                    auth_header = "Basic " + base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
-
-                    headers = {
-                        "Authorization": auth_header
-                    }
-
-                    response = requests.get(LOGINURL, headers=headers)
-
-                    if response.status_code == 200:
-                        axis = False
-                        camera = camera + f"\nALERTA! Sua senha da página de sua câmera AXIS está insegura!"
-                        break
-                
-                if(axis):
-                    camera = camera + f"\nCâmera AXIS OK"
-            
-            if("00-0d-88" in output):
-                iscamera = True
-                mac_address_to_find = "00-0d-88"
-                ip_pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+' + re.escape(mac_address_to_find)
-                ip_match = re.search(ip_pattern, output)
-                
-                if ip_match:
-                    ip_address = ip_match.group(1)
-                
-                LOGINURL = f"http://{ip_address}"
-                response = requests.get(LOGINURL)
-
-                if(response.status_code == 200):
-                    camera = camera + f"\nCâmera D-Link sem usuário e sem senha, extremamente vulnerável."
-                elif(response.status_code == 401):
-                    users = senhas_dict['camera']['password']
-                    passwords = senhas_dict['camera']['password']
-                    dlink = True
-
-                    for USERNAME in users:
-                        if(not dlink):
-                            break
-
-                        for PASSWORD in passwords:
-                            auth_header = "Basic " + base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
-
-                            headers = {
-                                "Authorization": auth_header
-                            }
-
-                            response = requests.get(LOGINURL, headers=headers)
-
-                            if response.status_code == 200:
-                                camera = camera + f"\nALERTA! Seu usuário e senha da página de sua câmera D-Link estão inseguros!"
-                                dlink = False
-                                break
+        openPortsPUB = check_open_ports(ip, ports)
+        openPortsPRIV = check_open_ports(ip_router, ports)
                     
-                    if(dlink):
-                        camera = camera + f"\nCâmera D-Link OK"
-            
-            if(not iscamera):
-                camera = f"\nNenhuma câmera detectada."
+        port_descriptions = {
+            21: "A porta 21 é usada para comunicações de transferência de arquivos através do protocolo FTP\n" 
+                "(File Transfer Protocol). Deixá-la aberta pode expor seus arquivos e seu disposivo\n" 
+		        "a riscos de segurança.\n",
+            22: "A porta 22 é usada para acesso seguro via SSH (Secure Shell). Deixá-la aberta pode permitir\n"
+                "acesso não autorizado ao seu sistema.\n",
+            23: "A porta 23 é usada para conexões de terminal remoto com o protocolo Telnet, que é inseguro, \n"
+            	"pois as informações são transmitidas em texto simples. Deixar esta porta aberta pode expor \n"
+            	"informações confidenciais.\n",
+            80: "A porta 80 é a porta padrão para tráfego HTTP, usado para acessar sites da web. Deixar essa \n"
+                "porta aberta pode expor seu servidor web a ataques.\n",
+            443: "A porta 443 é usada para tráfego HTTPS, que é uma versão segura do HTTP. É usada para transações \n"
+                 "seguras na web, como login e pagamento. Deixar essa porta aberta é geralmente seguro, desde que \n"
+                 "configurada corretamente com certificados SSL/TLS."
+        }
+    
+        camera = ""
+        iscamera = False
         
-        except:
+        octets = ip_router.split(".")[:3]
+        ip_default = ".".join(octets)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+            ips_to_ping = [ip_default + "." + str(i) for i in range(256)]
+            list(executor.map(ping_ip, ips_to_ping))
+
+        arp_command = ['arp', '-a']
+        output = subprocess.check_output(arp_command, stderr=subprocess.STDOUT).decode('latin1')
+        
+        if("00-40-8c" in output):
+            axis = True
+            iscamera = True
+            mac_address_to_find = "00-40-8c"
+            ip_pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+' + re.escape(mac_address_to_find)
+            ip_match = re.search(ip_pattern, output)
+            
+            if ip_match:
+                ip_address = ip_match.group(1)
+            
+            LOGINURL = f"http://{ip_address}/view/viewer_index.shtml"
+            USERNAME = "root"
+
+            passwords = senhas_dict['camera']['password']
+            
+            for PASSWORD in passwords:
+                auth_header = "Basic " + base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
+
+                headers = {
+                    "Authorization": auth_header
+                }
+
+                response = requests.get(LOGINURL, headers=headers)
+
+                if response.status_code == 200:
+                    axis = False
+                    camera = camera + f"\nALERTA! Sua senha da página de sua câmera AXIS está insegura!"
+                    break
+            
+            if(axis):
+                camera = camera + f"\nAparentemente sua senha da câmera AXIS está segura. Note que o usuário root é padrão."
+        
+        if("00-0d-88" in output):
+            iscamera = True
+            mac_address_to_find = "00-0d-88"
+            ip_pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+' + re.escape(mac_address_to_find)
+            ip_match = re.search(ip_pattern, output)
+            
+            if ip_match:
+                ip_address = ip_match.group(1)
+            
+            LOGINURL = f"http://{ip_address}"
+            response = requests.get(LOGINURL)
+
+            if(response.status_code == 200):
+                camera = camera + f"\nALERTA! Câmera D-Link sem usuário e sem senha, extremamente vulnerável."
+            elif(response.status_code == 401):
+                users = senhas_dict['camera']['password']
+                passwords = senhas_dict['camera']['password']
+                dlink = True
+
+                for USERNAME in users:
+                    if(not dlink):
+                        break
+
+                    for PASSWORD in passwords:
+                        auth_header = "Basic " + base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
+
+                        headers = {
+                            "Authorization": auth_header
+                        }
+
+                        response = requests.get(LOGINURL, headers=headers)
+
+                        if response.status_code == 200:
+                            camera = camera + f"\nALERTA! Seu usuário e senha da página de sua câmera D-Link estão inseguros!"
+                            dlink = False
+                            break
+                
+                if(dlink):
+                    camera = camera + f"\nAparentemente, seu usuário e senha da câmera D-Link está segura."
+        
+        if(not iscamera):
             camera = f"\nNenhuma câmera detectada."
-            pass
 
         for i in range(0, len(senhas_dict['roteador']['user'])):
             for y in range(0, len(senhas_dict['roteador']['password'])):
@@ -372,13 +376,23 @@ class SimpleApp(App):
                         text += "\nNão há nenhuma porta aberta em seu roteador."
                     else:
                         text += f"\nPortas abertas no roteador: {openPortsPRIV}"
-                
-                    common_ports = openPortsPUB + openPortsPRIV
-                    
+
+                    common_ports = []
+
+                    for elemento in openPortsPUB:
+                        if elemento not in common_ports:
+                            common_ports.append(elemento)
+
+                    for elemento in openPortsPRIV:
+                        if elemento not in common_ports:
+                            common_ports.append(elemento)
+
                     if common_ports:
                         for port in common_ports:
                             if port in port_descriptions:
                                 text += f"\n{port_descriptions[port]}"
+                    
+                    text += "\nSaiba mais em www.speedguide.net/ports_sg.php"
                     
                     self.story_label.text = f"{text}"
                     self.scan_button.disabled = False
@@ -389,7 +403,7 @@ class SimpleApp(App):
                     self.scan_button.disabled = False
                     return
         
-        text = f"Usuário e senha do roteador OK."
+        text = f"Aparentemente, seu usuário e senha da página do roteador estão seguros."
 
         if not openPortsPUB:
             text += "\nNão há nenhuma porta aberta em seu IP público."
@@ -401,50 +415,56 @@ class SimpleApp(App):
         else:
             text += f"\nPortas abertas no roteador: {openPortsPRIV}"
 
-        common_ports = openPortsPUB + openPortsPRIV
-        
+        common_ports = []
+
+        for elemento in openPortsPUB:
+            if elemento not in common_ports:
+                common_ports.append(elemento)
+
+        for elemento in openPortsPRIV:
+            if elemento not in common_ports:
+                common_ports.append(elemento)
+
         if common_ports:
             for port in common_ports:
                 if port in port_descriptions:
-                    text += f"\n{port}: {port_descriptions[port]}"
+                    text += f"\n{port_descriptions[port]}"
         
+        text += "\nSaiba mais em www.speedguide.net/ports_sg.php"
+                    
         self.story_label.text = f"{text}"
         self.scan_button.disabled = False
         return
 
 def testar_login(usuario, senha):
-    try:
-        gw = netifaces.gateways()
-        ip_router = gw['default'][netifaces.AF_INET][0]
-        
-        arp_command = ['arp', '-a', ip_router]
-        output = subprocess.check_output(arp_command).decode()
-        
-        if("c4:6e:1f" in output or "c4-6e-1f" in output):
-            LOGINURL = "http://" + ip_router
+    gw = netifaces.gateways()
+    ip_router = gw['default'][netifaces.AF_INET][0]
             
-            auth_header = "Basic " + base64.b64encode(f"{usuario}:{senha}".encode()).decode()
-            
-            headers = {
-                "Authorization": auth_header
-            }
-            
-            response = requests.get(LOGINURL, headers=headers)
-        
-        elif("d8:d7:75" in output or "d8-d7-75" in output):
-            LOGINURL = "http://" + ip_router + f"/timlogin.cgi?loginuser={usuario}&loginpasswd={senha}"
-
-            response = requests.get(LOGINURL)
-        
-        else:
-            return False, 3301
-
-        if response.status_code == 200:
-            return True, 200
-        else:
-            return False, 401
+    arp_command = ['arp', '-a', ip_router]
+    output = subprocess.check_output(arp_command, stderr=subprocess.STDOUT).decode('latin1')
     
-    except:
+    if("c4-6e-1f" in output):
+        LOGINURL = "http://" + ip_router
+        
+        auth_header = "Basic " + base64.b64encode(f"{usuario}:{senha}".encode()).decode()
+        
+        headers = {
+            "Authorization": auth_header
+        }
+        
+        response = requests.get(LOGINURL, headers=headers)
+    
+    elif("d8-d7-75" in output):
+        LOGINURL = "http://" + ip_router + f"/timlogin.cgi?loginuser={usuario}&loginpasswd={senha}"
+
+        response = requests.get(LOGINURL)
+    
+    else:
+        return False, 3301
+
+    if response.status_code == 200:
+        return True, 200
+    else:
         return False, 401
 
 def get_public_ip():
